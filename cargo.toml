@@ -13,5 +13,5 @@ path = "src/server/main.rs"
 
 [dependencies]
 anyhow = "1.0.95"
-iroh-net = "0.28.1"
+iroh = "0.30.0"
 tokio = "1.42.0"
