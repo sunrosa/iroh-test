@@ -1,6 +1,7 @@
 use std::str::{from_utf8, FromStr};
 
 use iroh::{endpoint::Connection, Endpoint, NodeAddr, PublicKey};
+use iroh_test::Event;
 
 fn main() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
@@ -15,7 +16,14 @@ async fn async_main() -> anyhow::Result<()> {
 
     let addr = NodeAddr::new(PublicKey::from_str(public_key)?);
     let ep = Endpoint::builder().discovery_n0().bind().await?;
-    let conn = ep.connect(addr, b"my-alpn").await?;
+
+    // Keep retrying connection until it's made
+    let conn = loop {
+        match ep.connect(addr.clone(), b"my-alpn").await {
+            Ok(o) => break o,
+            Err(_) => continue,
+        }
+    };
 
     // Ctrl-C handler to close connection
     tokio::task::spawn(async move {
@@ -26,10 +34,11 @@ async fn async_main() -> anyhow::Result<()> {
 
     tokio::task::spawn(receiver(conn.clone()));
 
-    println!("type your messages:");
-
     let mut send = conn.open_uni().await?;
-    send.write_all("connected".as_bytes()).await?;
+    send.write_all(&serde_json::to_vec(&Event::Connected(
+        conn.stable_id().to_string(),
+    ))?)
+    .await?;
     send.finish()?;
 
     loop {
@@ -37,8 +46,10 @@ async fn async_main() -> anyhow::Result<()> {
         std::io::stdin().read_line(&mut buf)?;
         let buf = buf.trim();
 
+        let event: Event = Event::Chat(conn.stable_id().to_string(), buf.into());
+
         let mut send = conn.open_uni().await?;
-        send.write_all(buf.as_bytes()).await?;
+        send.write_all(&serde_json::to_vec(&event)?).await?;
         send.finish()?;
     }
 }
@@ -47,13 +58,13 @@ async fn receiver(conn: Connection) -> anyhow::Result<()> {
     loop {
         let mut recv = conn.accept_uni().await?;
 
-        let received = recv.read_to_end(1024).await?;
-        let utf8 = from_utf8(&received)?.trim();
+        let received = recv.read_to_end(8192).await?;
+        let message: Event = serde_json::from_slice(&received)?;
 
-        if !utf8.is_empty() {
-            // If a message was received and has a length greater than 0, print it out
-            // Checking against buf[0] being 0 because recv.read will read twice per actual received message for some reason. The second message is zeroed.
-            println!("{utf8}");
+        match message {
+            Event::Chat(sender, content) => println!("{sender}: {content}"),
+            Event::Connected(c) => println!("{c} connected."),
+            Event::Disconnected(d) => println!("{d} disconnected."),
         }
     }
 }

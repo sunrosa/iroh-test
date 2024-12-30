@@ -10,6 +10,8 @@ use iroh::{
 };
 use tokio::sync::broadcast;
 
+use iroh_test::Event;
+
 fn main() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -28,30 +30,37 @@ async fn async_main() -> anyhow::Result<()> {
         .bind()
         .await?;
 
-    let (broadcastsend, _) = broadcast::channel(1024);
+    let (tx, _) = broadcast::channel(1024);
 
     loop {
         let conn = ep.accept().await.ok_or(anyhow!("err"))?.await?;
         println!("connection established with {:?}", conn.remote_address());
 
-        tokio::task::spawn(client(
-            conn,
-            broadcastsend.subscribe(),
-            broadcastsend.clone(),
-        ));
+        tokio::task::spawn(client_handler(conn, tx.subscribe(), tx.clone()));
     }
+}
+
+async fn client_handler(
+    conn: Connection,
+    rx: broadcast::Receiver<(usize, Event)>,
+    tx: broadcast::Sender<(usize, Event)>,
+) {
+    // Panic when Try unwinding
+    client(conn, rx, tx)
+        .await
+        .unwrap_or_else(|e| panic!("{e}\n{e:?}"));
 }
 
 async fn client(
     conn: Connection,
-    broadcastrecv: broadcast::Receiver<(usize, String)>,
-    broadcastsend: broadcast::Sender<(usize, String)>,
+    rx: broadcast::Receiver<(usize, Event)>,
+    tx: broadcast::Sender<(usize, Event)>,
 ) -> anyhow::Result<()> {
-    tokio::task::spawn(broadcast(conn.clone(), broadcastrecv));
+    tokio::task::spawn(broadcast(conn.clone(), rx));
 
     loop {
         let mut recv = if let Ok(o) =
-            tokio::time::timeout(Duration::from_secs(10), conn.accept_uni()).await
+            tokio::time::timeout(Duration::from_secs(30), conn.accept_uni()).await
         {
             match o {
                 Ok(o) => o,
@@ -59,7 +68,10 @@ async fn client(
                     ConnectionError::ApplicationClosed(_) | ConnectionError::ConnectionClosed(_),
                 ) => {
                     println!("{}: disconnected", conn.stable_id());
-                    broadcastsend.send((conn.stable_id(), "disconnected".into()))?;
+                    tx.send((
+                        conn.stable_id(),
+                        Event::Disconnected(conn.stable_id().to_string()),
+                    ))?; // Broadcast to *other* clients
                     break Ok(());
                 }
                 Err(e) => Err(e)?,
@@ -67,33 +79,44 @@ async fn client(
         } else {
             if conn.close_reason().is_some() {
                 println!("{}: disconnected", conn.stable_id());
-                broadcastsend.send((conn.stable_id(), "disconnected".into()))?;
+                tx.send((
+                    conn.stable_id(),
+                    Event::Disconnected(conn.stable_id().to_string()),
+                ))?; // Broadcast to *other* clients
                 break Ok(());
             }
 
             continue;
         };
 
-        let received = recv.read_to_end(1024).await?;
+        let received = recv.read_to_end(8192).await?;
 
-        let utf8 = from_utf8(&received)?.trim();
+        let event: Event = serde_json::from_slice(&received)?;
 
-        broadcastsend.send((conn.stable_id(), utf8.into()))?;
-        println!("{}: {}", conn.stable_id(), utf8);
+        match event {
+            Event::Chat(sender, content) => {
+                tx.send((conn.stable_id(), Event::Chat(sender, content.clone())))?;
+            }
+            Event::Connected(c) => {
+                tx.send((conn.stable_id(), Event::Connected(c)))?;
+            }
+            Event::Disconnected(c) => {
+                tx.send((conn.stable_id(), Event::Disconnected(c)))?;
+            }
+        }
     }
 }
 
 async fn broadcast(
     conn: Connection,
-    mut receiver: broadcast::Receiver<(usize, String)>,
+    mut receiver: broadcast::Receiver<(usize, Event)>,
 ) -> anyhow::Result<()> {
     loop {
         let msg = receiver.recv().await?;
 
-        if conn.stable_id() != msg.0 && !msg.1.is_empty() {
+        if conn.stable_id() != msg.0 {
             let mut send = conn.open_uni().await?;
-            send.write_all(format!("{}: {}", msg.0, msg.1).as_bytes())
-                .await?;
+            send.write_all(&serde_json::to_vec(&msg.1)?).await?;
             send.finish()?;
         }
     }
