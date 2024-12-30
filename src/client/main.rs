@@ -22,6 +22,8 @@ async fn async_main() -> anyhow::Result<()> {
 
     println!("type your messages:");
 
+    send.write_all("connected".as_bytes()).await?;
+
     loop {
         let mut buf = String::new();
         std::io::stdin().read_line(&mut buf)?;
@@ -34,10 +36,13 @@ async fn async_main() -> anyhow::Result<()> {
 async fn receiver(mut recv: RecvStream) -> anyhow::Result<()> {
     loop {
         let mut buf: [u8; 1024] = [0; 1024];
-        recv.read(&mut buf).await?;
+        if recv.read(&mut buf).await?.is_some() {
+            let utf8 = from_utf8(&buf)?.trim();
 
-        let utf8 = from_utf8(&buf)?.trim();
-
-        println!("{utf8}");
+            if !utf8.is_empty() {
+                // If a message was received and has a length greater than 0, print it out
+                println!("{utf8} AAAND {:?}", utf8.as_bytes());
+            }
+        }
     }
 }
