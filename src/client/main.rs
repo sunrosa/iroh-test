@@ -1,4 +1,4 @@
-use std::str::{from_utf8, FromStr};
+use std::str::FromStr;
 
 use iroh::{endpoint::Connection, Endpoint, NodeAddr, PublicKey};
 use iroh_test::Event;
@@ -31,8 +31,14 @@ async fn async_main() -> anyhow::Result<()> {
         ep.close().await.unwrap();
         std::process::exit(0);
     });
-
-    tokio::task::spawn(receiver(conn.clone()));
+    {
+        let conn = conn.clone();
+        tokio::task::spawn(async move {
+            receiver(conn)
+                .await
+                .unwrap_or_else(|e| panic!("{e}\n{e:?}"));
+        });
+    }
 
     let mut send = conn.open_uni().await?;
     send.write_all(&serde_json::to_vec(&Event::Connected(

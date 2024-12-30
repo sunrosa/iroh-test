@@ -1,7 +1,4 @@
-use std::{
-    str::{from_utf8, FromStr},
-    time::Duration,
-};
+use std::{str::FromStr, time::Duration};
 
 use anyhow::anyhow;
 use iroh::{
