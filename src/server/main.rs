@@ -22,38 +22,34 @@ async fn async_main() -> anyhow::Result<()> {
         .bind()
         .await?;
 
-    let (broadcastsend, mut broadcastrecv) = broadcast::channel(1024);
-
-    let recv1 = tokio::task::spawn(client(
-        ep.clone(),
-        broadcastsend.subscribe(),
-        broadcastsend.clone(),
-    ));
-    let recv2 = tokio::task::spawn(client(ep, broadcastsend.subscribe(), broadcastsend));
+    let (broadcastsend, _) = broadcast::channel(1024);
 
     loop {
-        let msg = broadcastrecv.recv().await?;
-        println!("{}: {}", msg.0, msg.1);
-    }
+        let conn = ep.accept().await.ok_or(anyhow!("err"))?.await?;
+        println!("connection established with {:?}", conn.remote_address());
 
-    join!(recv1, recv2);
+        tokio::task::spawn(client(
+            conn,
+            broadcastsend.subscribe(),
+            broadcastsend.clone(),
+        ));
+    }
 }
 
 async fn client(
-    ep: Endpoint,
+    conn: Connection,
     broadcastrecv: broadcast::Receiver<(usize, String)>,
     broadcastsend: broadcast::Sender<(usize, String)>,
 ) -> anyhow::Result<()> {
-    let conn = ep.accept().await.ok_or(anyhow!("err"))?.await?;
-    println!("connection established with {:?}", conn.remote_address());
-
     tokio::task::spawn(broadcast(conn.clone(), broadcastrecv));
 
     loop {
         let mut recv = conn.accept_uni().await?;
         let received = recv.read_to_end(1024).await?;
         let utf8 = from_utf8(&received)?.trim();
+
         broadcastsend.send((conn.stable_id(), utf8.into()))?;
+        println!("{}: {}", conn.stable_id(), utf8);
     }
 }
 
