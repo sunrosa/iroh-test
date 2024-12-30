@@ -1,9 +1,6 @@
 use std::str::{from_utf8, FromStr};
 
-use iroh::{
-    endpoint::{Connection, RecvStream, VarInt},
-    Endpoint, NodeAddr, PublicKey,
-};
+use iroh::{endpoint::Connection, Endpoint, NodeAddr, PublicKey};
 
 fn main() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
@@ -20,15 +17,12 @@ async fn async_main() -> anyhow::Result<()> {
     let ep = Endpoint::builder().discovery_n0().bind().await?;
     let conn = ep.connect(addr, b"my-alpn").await?;
 
-    {
-        // Ctrl-C handler to close connection
-        let conn = conn.clone();
-        tokio::task::spawn(async move {
-            tokio::signal::ctrl_c().await.unwrap();
-            ep.close().await.unwrap();
-            std::process::exit(0);
-        });
-    }
+    // Ctrl-C handler to close connection
+    tokio::task::spawn(async move {
+        tokio::signal::ctrl_c().await.unwrap();
+        ep.close().await.unwrap();
+        std::process::exit(0);
+    });
 
     tokio::task::spawn(receiver(conn.clone()));
 

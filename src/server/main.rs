@@ -59,6 +59,7 @@ async fn client(
                     ConnectionError::ApplicationClosed(_) | ConnectionError::ConnectionClosed(_),
                 ) => {
                     println!("{}: disconnected", conn.stable_id());
+                    broadcastsend.send((conn.stable_id(), "disconnected".into()))?;
                     break Ok(());
                 }
                 Err(e) => Err(e)?,
@@ -66,6 +67,7 @@ async fn client(
         } else {
             if conn.close_reason().is_some() {
                 println!("{}: disconnected", conn.stable_id());
+                broadcastsend.send((conn.stable_id(), "disconnected".into()))?;
                 break Ok(());
             }
 
