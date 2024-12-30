@@ -1,8 +1,14 @@
-use std::str::{from_utf8, FromStr};
+use std::{
+    str::{from_utf8, FromStr},
+    time::Duration,
+};
 
 use anyhow::anyhow;
-use iroh::{endpoint::Connection, Endpoint, SecretKey};
-use tokio::{join, sync::broadcast};
+use iroh::{
+    endpoint::{Connection, ConnectionError},
+    Endpoint, SecretKey,
+};
+use tokio::sync::broadcast;
 
 fn main() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
@@ -44,8 +50,30 @@ async fn client(
     tokio::task::spawn(broadcast(conn.clone(), broadcastrecv));
 
     loop {
-        let mut recv = conn.accept_uni().await?;
+        let mut recv = if let Ok(o) =
+            tokio::time::timeout(Duration::from_secs(10), conn.accept_uni()).await
+        {
+            match o {
+                Ok(o) => o,
+                Err(
+                    ConnectionError::ApplicationClosed(_) | ConnectionError::ConnectionClosed(_),
+                ) => {
+                    println!("{}: disconnected", conn.stable_id());
+                    break Ok(());
+                }
+                Err(e) => Err(e)?,
+            }
+        } else {
+            if conn.close_reason().is_some() {
+                println!("{}: disconnected", conn.stable_id());
+                break Ok(());
+            }
+
+            continue;
+        };
+
         let received = recv.read_to_end(1024).await?;
+
         let utf8 = from_utf8(&received)?.trim();
 
         broadcastsend.send((conn.stable_id(), utf8.into()))?;

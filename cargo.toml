@@ -14,4 +14,4 @@ path = "src/server/main.rs"
 [dependencies]
 anyhow = "1.0.95"
 iroh = "0.30.0"
-tokio = "1.42.0"
+tokio = { version = "1.42.0", features = ["time"] }

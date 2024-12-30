@@ -1,7 +1,7 @@
 use std::str::{from_utf8, FromStr};
 
 use iroh::{
-    endpoint::{Connection, RecvStream},
+    endpoint::{Connection, RecvStream, VarInt},
     Endpoint, NodeAddr, PublicKey,
 };
 
@@ -19,6 +19,16 @@ async fn async_main() -> anyhow::Result<()> {
     let addr = NodeAddr::new(PublicKey::from_str(public_key)?);
     let ep = Endpoint::builder().discovery_n0().bind().await?;
     let conn = ep.connect(addr, b"my-alpn").await?;
+
+    {
+        // Ctrl-C handler to close connection
+        let conn = conn.clone();
+        tokio::task::spawn(async move {
+            tokio::signal::ctrl_c().await.unwrap();
+            ep.close().await.unwrap();
+            std::process::exit(0);
+        });
+    }
 
     tokio::task::spawn(receiver(conn.clone()));
 
