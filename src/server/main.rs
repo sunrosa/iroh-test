@@ -1,11 +1,8 @@
 use std::str::{from_utf8, FromStr};
 
 use anyhow::anyhow;
-use iroh::{endpoint::SendStream, Endpoint, SecretKey};
-use tokio::{
-    join, select,
-    sync::mpsc::{self, UnboundedSender},
-};
+use iroh::{endpoint::Connection, Endpoint, SecretKey};
+use tokio::{join, sync::broadcast};
 
 fn main() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
@@ -25,7 +22,7 @@ async fn async_main() -> anyhow::Result<()> {
         .bind()
         .await?;
 
-    let (broadcastsend, mut broadcastrecv) = tokio::sync::broadcast::channel(1024);
+    let (broadcastsend, mut broadcastrecv) = broadcast::channel(1024);
 
     let recv1 = tokio::task::spawn(client(
         ep.clone(),
@@ -44,37 +41,34 @@ async fn async_main() -> anyhow::Result<()> {
 
 async fn client(
     ep: Endpoint,
-    broadcastrecv: tokio::sync::broadcast::Receiver<(usize, String)>,
-    broadcastsend: tokio::sync::broadcast::Sender<(usize, String)>,
+    broadcastrecv: broadcast::Receiver<(usize, String)>,
+    broadcastsend: broadcast::Sender<(usize, String)>,
 ) -> anyhow::Result<()> {
     let conn = ep.accept().await.ok_or(anyhow!("err"))?.await?;
     println!("connection established with {:?}", conn.remote_address());
-    let (send, mut recv) = conn.accept_bi().await?;
 
-    tokio::task::spawn(broadcast(conn.stable_id(), send, broadcastrecv));
+    tokio::task::spawn(broadcast(conn.clone(), broadcastrecv));
 
     loop {
-        let mut buf: [u8; 1024] = [0; 1024];
-        recv.read(&mut buf).await?;
-
-        let utf8 = from_utf8(&buf)?.trim();
-        let formatted = format!("{}: {}", conn.stable_id(), utf8);
-
+        let mut recv = conn.accept_uni().await?;
+        let received = recv.read_to_end(1024).await?;
+        let utf8 = from_utf8(&received)?.trim();
         broadcastsend.send((conn.stable_id(), utf8.into()))?;
     }
 }
 
 async fn broadcast(
-    conn_id: usize,
-    mut send: SendStream,
-    mut receiver: tokio::sync::broadcast::Receiver<(usize, String)>,
+    conn: Connection,
+    mut receiver: broadcast::Receiver<(usize, String)>,
 ) -> anyhow::Result<()> {
     loop {
         let msg = receiver.recv().await?;
 
-        if conn_id != msg.0 && !msg.1.is_empty() {
-            send.write(format!("{}: {}", msg.0, msg.1).as_bytes())
+        if conn.stable_id() != msg.0 && !msg.1.is_empty() {
+            let mut send = conn.open_uni().await?;
+            send.write_all(format!("{}: {}", msg.0, msg.1).as_bytes())
                 .await?;
+            send.finish()?;
         }
     }
 }
