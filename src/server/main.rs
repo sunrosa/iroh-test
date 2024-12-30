@@ -1,7 +1,7 @@
 use std::str::{from_utf8, FromStr};
 
 use anyhow::anyhow;
-use iroh::{Endpoint, SecretKey};
+use iroh::{endpoint::SendStream, Endpoint, SecretKey};
 use tokio::{
     join, select,
     sync::mpsc::{self, UnboundedSender},
@@ -26,9 +26,15 @@ async fn async_main() -> anyhow::Result<()> {
         .await?;
 
     let (mpscsend, mut mpscrecv) = mpsc::unbounded_channel();
+    let (broadcastsend, broadcastrecv) = tokio::sync::broadcast::channel(1024);
 
-    let recv1 = tokio::task::spawn(receiver(ep.clone(), mpscsend.clone()));
-    let recv2 = tokio::task::spawn(receiver(ep, mpscsend));
+    let recv1 = tokio::task::spawn(client(
+        ep.clone(),
+        mpscsend.clone(),
+        broadcastsend.subscribe(),
+        broadcastsend.clone(),
+    ));
+    let recv2 = tokio::task::spawn(client(ep, mpscsend, broadcastrecv, broadcastsend));
 
     loop {
         let msg = mpscrecv
@@ -41,15 +47,43 @@ async fn async_main() -> anyhow::Result<()> {
     join!(recv1, recv2);
 }
 
-async fn receiver(ep: Endpoint, sender: UnboundedSender<String>) -> anyhow::Result<()> {
+async fn client(
+    ep: Endpoint,
+    sender: UnboundedSender<String>,
+    broadcastrecv: tokio::sync::broadcast::Receiver<(usize, String)>,
+    broadcastsend: tokio::sync::broadcast::Sender<(usize, String)>,
+) -> anyhow::Result<()> {
     let conn = ep.accept().await.ok_or(anyhow!("err"))?.await?;
     println!("connection established with {:?}", conn.remote_address());
-    let mut recv = conn.accept_uni().await?;
+    let (send, mut recv) = conn.accept_bi().await?;
+
+    tokio::task::spawn(broadcast(conn.stable_id(), send, broadcastrecv));
 
     loop {
         let mut buf: [u8; 1024] = [0; 1024];
         recv.read(&mut buf).await?;
 
-        sender.send(format!("{}: {}", conn.stable_id(), from_utf8(&buf)?))?;
+        let utf8 = from_utf8(&buf)?.trim();
+        let formatted = format!("{}: {}", conn.stable_id(), utf8);
+
+        sender.send(formatted)?;
+        broadcastsend.send((conn.stable_id(), utf8.into()))?;
+    }
+}
+
+async fn broadcast(
+    conn_id: usize,
+    mut send: SendStream,
+    mut receiver: tokio::sync::broadcast::Receiver<(usize, String)>,
+) -> anyhow::Result<()> {
+    send.write("connected".as_bytes()).await?;
+
+    loop {
+        let msg = receiver.recv().await?;
+
+        if conn_id != msg.0 {
+            send.write(format!("{}: {}", msg.0, msg.1).as_bytes())
+                .await?;
+        }
     }
 }
