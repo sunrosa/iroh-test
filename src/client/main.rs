@@ -39,9 +39,14 @@ async fn receiver(mut recv: RecvStream) -> anyhow::Result<()> {
         if recv.read(&mut buf).await?.is_some() {
             let utf8 = from_utf8(&buf)?.trim();
 
-            if !utf8.is_empty() {
+            // if buf[0] == 0 {
+            //     println!("received zeroes");
+            // }
+
+            if !utf8.is_empty() && buf[0] != 0 {
                 // If a message was received and has a length greater than 0, print it out
-                println!("{utf8} AAAND {:?}", utf8.as_bytes());
+                // Checking against buf[0] being 0 because recv.read will read twice per actual received message for some reason. The second message is zeroed.
+                println!("{utf8}");
             }
         }
     }
